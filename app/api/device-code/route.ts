@@ -13,6 +13,6 @@ export async function POST(request:NextRequest){
  const auth=normalizeCode(String(body.authPart??''),DEVICE_AUTH_LEN),payload=String(body.payload??''),payloadIv=String(body.payloadIv??''),payloadSalt=String(body.payloadSalt??'')
  if(auth.length!==DEVICE_AUTH_LEN)return NextResponse.json({error:'Ungueltige Anfrage.'},{status:400})
  const admin=createAdminClient();await admin.from('invite_codes').delete().eq('kind','device').eq('for_user',user.id).is('used_at',null)
- const {error}=await admin.from('invite_codes').insert({kind:'device',for_user:user.id,code_hash:hashCode(auth,pepper),expires_at:new Date(Date.now()+600000).toISOString(),payload,payload_iv:payloadIv,payload_salt:payloadSalt})
+ const codeHash=await hashCode(auth,pepper),{error}=await admin.from('invite_codes').insert({kind:'device',for_user:user.id,code_hash:codeHash,expires_at:new Date(Date.now()+600000).toISOString(),payload,payload_iv:payloadIv,payload_salt:payloadSalt})
  if(error)return NextResponse.json({error:'Code konnte nicht angelegt werden.'},{status:500});return NextResponse.json({minutes:10})
 }

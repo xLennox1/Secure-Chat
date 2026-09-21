@@ -1,0 +1,1 @@
+import 'server-only';import crypto from 'node:crypto';export const hashCode=(a:string,p:string)=>crypto.createHmac('sha256',p).update(a).digest('hex');

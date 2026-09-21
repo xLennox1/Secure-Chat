@@ -1,8 +1,16 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse,type NextRequest } from 'next/server'
-import crypto from 'node:crypto'
+
+function createNonce() {
+ const bytes = new Uint8Array(16)
+ crypto.getRandomValues(bytes)
+ let binary = ''
+ for (const byte of bytes) binary += String.fromCharCode(byte)
+ return btoa(binary)
+}
+
 export async function middleware(request:NextRequest){
- const nonce=crypto.randomBytes(16).toString('base64')
+ const nonce=createNonce()
  const csp=[`default-src 'self'`,`script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,`style-src 'self' 'unsafe-inline'`,`img-src 'self' data: blob:`,`font-src 'self'`,`connect-src 'self' https://*.supabase.co wss://*.supabase.co`,`frame-ancestors 'none'`,`base-uri 'self'`,`form-action 'self'`].join('; ')
  const requestHeaders=new Headers(request.headers);requestHeaders.set('x-nonce',nonce)
  let response=NextResponse.next({request:{headers:requestHeaders}})

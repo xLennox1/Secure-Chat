@@ -16,7 +16,7 @@ function createNonce() {
 function buildCsp(nonce: string) {
   return [
     "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' ${isDev ? "'unsafe-eval'" : ''}`,
+    `script-src 'self' 'nonce-${nonce}' ${isDev ? "'unsafe-eval'" : ''}`,
     "style-src 'self' 'unsafe-inline'",
     "font-src 'self'",
     "img-src 'self' data: blob:",
@@ -29,7 +29,7 @@ function buildCsp(nonce: string) {
     "form-action 'self'",
     "object-src 'none'",
     'upgrade-insecure-requests',
-  ].map((line) => line.trim().replace(/\s+/g, ' ')).join('; ')
+  ].map((line) => line.trim().replace(/\\s+/g, ' ')).join('; ')
 }
 
 export async function middleware(request: NextRequest) {

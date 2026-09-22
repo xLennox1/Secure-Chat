@@ -28,13 +28,14 @@ export default function Home() {
         token_hash: data.tokenHash,
         type: 'magiclink',
       })
-      if (authError) throw new Error('Anmeldung konnte nicht abgeschlossen werden.')
+      if (authError) throw new Error(`Anmeldung konnte nicht abgeschlossen werden: ${authError.message}`)
 
       sessionStorage.setItem('invite-chat-user', JSON.stringify({
         userId: data.userId,
         username: data.username,
       }))
-      router.push('/chat')
+      router.replace('/chat')
+      router.refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Fehler')
     } finally {

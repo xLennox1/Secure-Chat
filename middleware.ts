@@ -29,7 +29,7 @@ function buildCsp(nonce: string) {
     "form-action 'self'",
     "object-src 'none'",
     'upgrade-insecure-requests',
-  ].map((line) => line.trim().replace(/\\s+/g, ' ')).join('; ')
+  ].map((line) => line.trim().replace(/\s+/g, ' ')).join('; ')
 }
 
 export async function middleware(request: NextRequest) {

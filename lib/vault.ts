@@ -1,5 +1,12 @@
 'use client'
 
+/**
+ * Der Tresor liegt in IndexedDB. Er enthaelt den privaten Identitaetsschluessel
+ * und die Sitzung, beides mit dem Sperrcode verschluesselt. Ohne Sperrcode ist
+ * der Inhalt fuer niemanden zu gebrauchen, auch nicht fuer jemanden mit
+ * Vollzugriff auf das Browserprofil.
+ */
+
 import { fromB64, keyFromSecret, randomBytes, seal, toB64, unseal, type Sealed } from './crypto'
 
 const DB_NAME = 'invite-chat'
@@ -45,6 +52,8 @@ export const readVault = () => transact<Vault | undefined>('readonly', (s) => s.
 export const writeVault = (vault: Vault) => transact<unknown>('readwrite', (s) => s.put(vault, RECORD))
 export const wipeVault = () => transact<unknown>('readwrite', (s) => s.delete(RECORD))
 
+/* ------------------------------------------------------------- Einrichten */
+
 export async function createVault(args: {
   userId: string
   username: string
@@ -55,6 +64,7 @@ export async function createVault(args: {
   const salt = randomBytes(16)
   const pinKey = await keyFromSecret(args.pin, salt)
   const identity = await seal(pinKey, new TextEncoder().encode(JSON.stringify(args.privateJwk)))
+
   await writeVault({
     userId: args.userId,
     username: args.username,
@@ -64,15 +74,21 @@ export async function createVault(args: {
     session: null,
     failures: 0,
   })
+
   return pinKey
 }
 
+/* --------------------------------------------------------------- Oeffnen */
+
 export type Opened = { vault: Vault; pinKey: CryptoKey; privateJwk: JsonWebKey }
 
+/** Wirft, wenn der Sperrcode falsch ist. Nach zu vielen Fehlern loescht sich der Tresor. */
 export async function openVault(pin: string): Promise<Opened> {
   const vault = await readVault()
   if (!vault) throw new Error('kein Tresor')
+
   const pinKey = await keyFromSecret(pin, fromB64(vault.salt))
+
   try {
     const raw = await unseal(pinKey, vault.identity)
     const privateJwk = JSON.parse(new TextDecoder().decode(raw)) as JsonWebKey
@@ -89,8 +105,11 @@ export async function openVault(pin: string): Promise<Opened> {
   }
 }
 
+/* --------------------------------------------------------------- Sitzung */
+
 export type StoredSession = { access_token: string; refresh_token: string }
 
+/** Sitzung verschluesselt ablegen, damit die Sperre sie wieder herstellen kann. */
 export async function stashSession(pinKey: CryptoKey, session: StoredSession) {
   const vault = await readVault()
   if (!vault) return

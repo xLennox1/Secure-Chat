@@ -21,6 +21,8 @@ const td = new TextDecoder()
 
 export const PBKDF2_ROUNDS = 600_000
 
+/* ------------------------------------------------------------------ Base64 */
+
 export function toB64(data: ArrayBuffer | Uint8Array): string {
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
   let binary = ''
@@ -36,6 +38,8 @@ export function fromB64(value: string): Uint8Array {
 }
 
 export const randomBytes = (length: number) => crypto.getRandomValues(new Uint8Array(length))
+
+/* ----------------------------------------------------------------- AES-GCM */
 
 export type Sealed = { iv: string; ct: string }
 
@@ -60,6 +64,9 @@ export const sealText = (key: CryptoKey, text: string, aad?: string) =>
 export const unsealText = async (key: CryptoKey, sealed: Sealed, aad?: string) =>
   td.decode(await unseal(key, sealed, aad))
 
+/* -------------------------------------------------- Sperrcode -> Schluessel */
+
+/** Aus einem Sperrcode oder einem Code-Fragment einen AES-Schluessel ableiten. */
 export async function keyFromSecret(secret: string, salt: Uint8Array): Promise<CryptoKey> {
   const base = await crypto.subtle.importKey(
     'raw',
@@ -77,7 +84,12 @@ export async function keyFromSecret(secret: string, salt: Uint8Array): Promise<C
   )
 }
 
+/* --------------------------------------------------------------- Identitaet */
+
 export function generateIdentity(): Promise<CryptoKeyPair> {
+  // extractable, weil der private Schluessel fuer ein zweites Geraet exportiert
+  // werden koennen muss. Er liegt ausserhalb des Arbeitsspeichers nur
+  // verschluesselt vor.
   return crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, [
     'deriveKey',
     'deriveBits',
@@ -98,6 +110,11 @@ export const importPrivateJwk = (jwk: JsonWebKey) =>
 export const sameKey = (a?: JsonWebKey | null, b?: JsonWebKey | null) =>
   !!a && !!b && a.crv === b.crv && a.kty === b.kty && a.x === b.x && a.y === b.y
 
+/**
+ * Kurzer Fingerabdruck eines oeffentlichen Schluessels. Zwei Leute koennen ihn
+ * ueber einen anderen Kanal vergleichen. Stimmt er ueberein, hat unterwegs
+ * niemand Schluessel ausgetauscht.
+ */
 export async function fingerprint(jwk: JsonWebKey): Promise<string> {
   const canonical = JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y })
   const digest = await crypto.subtle.digest('SHA-256', te.encode(canonical) as BufferSource)
@@ -109,6 +126,8 @@ export async function fingerprint(jwk: JsonWebKey): Promise<string> {
     .match(/.{1,4}/g)!
     .join(' ')
 }
+
+/* ------------------------------------------------ Schluessel je Unterhaltung */
 
 export function generateConversationKey(): Promise<CryptoKey> {
   return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
@@ -134,12 +153,21 @@ async function agree(mine: CryptoKey, theirs: CryptoKey, context: string): Promi
   )
 }
 
-export type KeyRow = { wrapped_key: string; sender_public_key: JsonWebKey; iv: string }
+export type KeyRow = {
+  wrapped_key: string
+  sender_public_key: JsonWebKey
+  iv: string
+}
+
+/** Der Kontext bindet eine Verpackung an Unterhaltung und Epoche. */
 export const keyContext = (conversationId: string, epoch: number) =>
   `invite-chat/key/${conversationId}/${epoch}`
+
+/** Der AAD bindet eine Nachricht an Unterhaltung und Epoche. */
 export const messageContext = (conversationId: string, epoch: number) =>
   `invite-chat/msg/${conversationId}/${epoch}`
 
+/** Gruppenschluessel fuer genau eine Person verpacken. */
 export async function wrapFor(
   conversationKey: CryptoKey,
   myPrivate: CryptoKey,
@@ -154,7 +182,16 @@ export async function wrapFor(
   return { wrapped_key: sealed.ct, sender_public_key: myPublicJwk, iv: sealed.iv }
 }
 
-export async function unwrapFrom(myPrivate: CryptoKey, row: KeyRow, context: string): Promise<CryptoKey> {
+/**
+ * Gruppenschluessel auspacken. Gelingt nur, wenn die Verpackung wirklich von
+ * dem oeffentlichen Schluessel in der Zeile stammt. Ob dieser Schluessel zu der
+ * Person gehoert, die sich als Absender ausgibt, prueft der Aufrufer.
+ */
+export async function unwrapFrom(
+  myPrivate: CryptoKey,
+  row: KeyRow,
+  context: string
+): Promise<CryptoKey> {
   const sender = await importPublicJwk(row.sender_public_key)
   const wrapper = await agree(myPrivate, sender, context)
   const raw = await unseal(wrapper, { iv: row.iv, ct: row.wrapped_key }, context)
@@ -163,6 +200,8 @@ export async function unwrapFrom(myPrivate: CryptoKey, row: KeyRow, context: str
     'decrypt',
   ])
 }
+
+/* -------------------------------------------------------------------- JSON */
 
 export const sealJson = (key: CryptoKey, value: unknown, aad?: string) =>
   sealText(key, JSON.stringify(value), aad)

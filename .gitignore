@@ -2,9 +2,12 @@ node_modules/
 .next/
 out/
 build/
+
+# Niemals committen: enthaelt den Secret Key und den Pepper
 .env
 .env.local
 .env*.local
+
 .vercel
 *.tsbuildinfo
 next-env.d.ts

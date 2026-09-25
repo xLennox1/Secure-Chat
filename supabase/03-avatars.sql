@@ -52,8 +52,6 @@ create policy "avatars_update_own" on public.avatars
 create policy "avatars_delete_own" on public.avatars
   for delete to authenticated using (user_id = (select auth.uid()));
 
--- Setzt updated_at bei jeder Aenderung serverseitig, unabhaengig davon, was
--- der Client mitschickt.
 create or replace function public.touch_avatar()
 returns trigger language plpgsql security definer
 set search_path = public, pg_temp as $$
@@ -66,8 +64,6 @@ $$;
 create trigger avatars_touch_updated_at
 before insert or update on public.avatars
 for each row execute function public.touch_avatar();
-
--- ----------------------------------------------------------------- Realtime --
 
 alter table public.avatars replica identity full;
 alter publication supabase_realtime add table public.avatars;

@@ -2,8 +2,8 @@ import type { Metadata, Viewport } from 'next'
 import { IBM_Plex_Sans, IBM_Plex_Mono } from 'next/font/google'
 import './globals.css'
 
-// next/font laedt die Schriften beim Build herunter und liefert sie aus der
-// eigenen Domain aus. Kein Aufruf zu Google, kein IP-Abfluss beim Besucher.
+export const dynamic = 'force-dynamic'
+
 const sans = IBM_Plex_Sans({
   subsets: ['latin'],
   weight: ['400', '500', '600'],

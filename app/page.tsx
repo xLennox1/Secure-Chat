@@ -44,7 +44,7 @@ type Pending = {
   payloadSalt?: string
 }
 
-type Stage = 'checking' | 'unlock' | 'code' | 'pin'
+type Stage = 'checking' | 'unlock' | 'code' | 'pin' | 'error'
 
 export default function Gate() {
   const router = useRouter()
@@ -59,33 +59,31 @@ export default function Gate() {
 
   useEffect(() => {
     void (async () => {
-      const vault = await readVault()
-      if (vault) return setStage('unlock')
+      try {
+        const vault = await readVault()
+        if (vault) return setStage('unlock')
 
-      // Kommt jemand über einen Einladungslink (?code=...), den Code nur
-      // vorausfuellen, nie automatisch absenden — sonst koennte etwa eine
-      // Link-Vorschau in einer Messenger-App den Einmal-Code verbrauchen,
-      // bevor die eigentliche Person ihn sieht.
-      const fromLink = normalizeCode(
-        new URLSearchParams(window.location.search).get('code') ?? '',
-        DEVICE_LEN
-      )
-      if (fromLink) {
-        setCode(fromLink)
-        window.history.replaceState({}, '', window.location.pathname)
+        const fromLink = normalizeCode(
+          new URLSearchParams(window.location.search).get('code') ?? '',
+          DEVICE_LEN
+        )
+        if (fromLink) {
+          setCode(fromLink)
+          window.history.replaceState({}, '', window.location.pathname)
+        }
+
+        const supabase = createClient()
+        const { data } = await supabase.auth.getSession()
+        if (data.session) await supabase.auth.signOut()
+        setStage('code')
+      } catch (problem) {
+        setError(problem instanceof Error ? problem.message : 'Unbekannter Fehler.')
+        setStage('error')
       }
-
-      // Sitzung ohne Tresor: ohne Schluessel nuetzt sie nichts, also weg damit.
-      const supabase = createClient()
-      const { data } = await supabase.auth.getSession()
-      if (data.session) await supabase.auth.signOut()
-      setStage('code')
     })()
   }, [])
 
   const kind = kindOf(code)
-
-  /* ------------------------------------------------------------- entsperren */
 
   async function unlock(event: React.FormEvent) {
     event.preventDefault()
@@ -117,8 +115,6 @@ export default function Gate() {
     }
   }
 
-  /* ----------------------------------------------------------- Code einlösen */
-
   async function redeem(event: React.FormEvent) {
     event.preventDefault()
     if (busy || !isCompleteCode(code)) return
@@ -148,8 +144,6 @@ export default function Gate() {
     setBusy(false)
   }
 
-  /* -------------------------------------------------- Sperrcode einrichten */
-
   async function setupPin(event: React.FormEvent) {
     event.preventDefault()
     if (busy || !pending) return
@@ -165,11 +159,7 @@ export default function Gate() {
       let privateJwk: JsonWebKey
       let publicJwk: JsonWebKey
 
-      // Erst die Schluessel, dann die Sitzung, dann der Tresor. Schlaegt etwas
-      // davor fehl, bleibt kein halber Tresor zurueck.
       if (pending.kind === 'device') {
-        // Die zweite Hälfte des Codes hat den Server nie gesehen. Nur mit ihr
-        // lässt sich der mitgereiste Identitätsschlüssel öffnen.
         const unwrapKey = await keyFromSecret(pending.secret, fromB64(pending.payloadSalt!))
         const moved = await unsealJson<{ privateJwk: JsonWebKey; publicJwk: JsonWebKey }>(
           unwrapKey,
@@ -230,14 +220,32 @@ export default function Gate() {
     }
   }
 
-  /* ------------------------------------------------------------------- View */
-
   if (stage === 'checking') {
-    return <main className="gate" />
+    return (
+      <main className="gate">
+        <p className="fine">Wird geladen …</p>
+      </main>
+    )
   }
 
   return (
     <main className="gate">
+      {stage === 'error' && (
+        <div className="slip">
+          <div className="perf" aria-hidden="true" />
+          <h1>Das hat nicht geklappt</h1>
+          <p className="lede">Beim Start ist ein Fehler aufgetreten.</p>
+          {error && (
+            <p className="note" role="alert">
+              {error}
+            </p>
+          )}
+          <button className="btn" type="button" onClick={() => window.location.reload()}>
+            Neu laden
+          </button>
+        </div>
+      )}
+
       {stage === 'unlock' && (
         <form className="slip" onSubmit={unlock}>
           <div className="perf" aria-hidden="true" />

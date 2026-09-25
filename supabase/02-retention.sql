@@ -7,6 +7,8 @@
 
 create extension if not exists pg_cron;
 
+-- Einstellungen als Tabelle, damit du die Fristen aendern kannst, ohne
+-- die Funktion neu schreiben zu muessen.
 create table if not exists public.app_config (
   key   text primary key,
   value text not null
@@ -14,6 +16,7 @@ create table if not exists public.app_config (
 
 alter table public.app_config enable row level security;
 revoke all on public.app_config from anon, authenticated;
+-- Keine Policy: nur der Secret Key auf dem Server kommt heran.
 
 insert into public.app_config (key, value) values
   ('message_retention_days', '90'),
@@ -87,3 +90,11 @@ select cron.unschedule('purge-old-data')
  where exists (select 1 from cron.job where jobname = 'purge-old-data');
 
 select cron.schedule('purge-old-data', '17 3 * * *', $$select public.purge_old_data()$$);
+
+-- Fristen spaeter aendern:
+--   update public.app_config set value = '30' where key = 'message_retention_days';
+-- Einmal von Hand aufraeumen:
+--   select public.purge_old_data();
+-- Laeuft der Job?
+--   select jobname, schedule, active from cron.job;
+--   select * from cron.job_run_details order by start_time desc limit 10;

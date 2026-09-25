@@ -33,7 +33,7 @@ import {
 
 const IDLE_MINUTES = Number(process.env.NEXT_PUBLIC_IDLE_MINUTES ?? 5)
 
-type Profile = { id: string; username: string; identity_public_key: JsonWebKey | null }
+type Profile = { id: string; username: string; identity_public_key: JsonWebKey | null; avatar_url: string | null }
 type Member = { user_id: string; role: string; profiles: { id: string; username: string } | null }
 type Conversation = {
   id: string
@@ -74,6 +74,34 @@ function avatarColor(id: string): string {
   return AVATAR_COLORS[hash % AVATAR_COLORS.length]
 }
 
+const AVATAR_SIDE = 320
+const AVATAR_MAX_CHARS = 380_000
+async function processImageFile(file: File): Promise<string> {
+  if (!file.type.startsWith('image/')) throw new Error('Das ist kein Bild.')
+  const objectUrl = URL.createObjectURL(file)
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image()
+      el.onload = () => resolve(el)
+      el.onerror = () => reject(new Error('Das Bild ließ sich nicht lesen.'))
+      el.src = objectUrl
+    })
+    const side = Math.min(img.naturalWidth, img.naturalHeight)
+    if (!side) throw new Error('Das Bild ließ sich nicht lesen.')
+    const canvas = document.createElement('canvas')
+    canvas.width = AVATAR_SIDE
+    canvas.height = AVATAR_SIDE
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('Bildbearbeitung wird hier nicht unterstützt.')
+    ctx.drawImage(img, (img.naturalWidth-side)/2, (img.naturalHeight-side)/2, side, side, 0, 0, AVATAR_SIDE, AVATAR_SIDE)
+    for (const quality of [0.85, 0.7, 0.55, 0.4]) {
+      const dataUrl = canvas.toDataURL('image/jpeg', quality)
+      if (dataUrl.length <= AVATAR_MAX_CHARS) return dataUrl
+    }
+    throw new Error('Das Bild ist auch verkleinert noch zu groß.')
+  } finally { URL.revokeObjectURL(objectUrl) }
+}
+
 export default function ChatClient({ me }: { me: { id: string; username: string } }) {
   const supabase = useMemo(() => createClient(), [])
   const router = useRouter()
@@ -87,7 +115,7 @@ export default function ChatClient({ me }: { me: { id: string; username: string 
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [noKey, setNoKey] = useState(false)
-  const [dialog, setDialog] = useState<null | 'group' | 'invite' | 'device' | 'keys'>(null)
+  const [dialog, setDialog] = useState<null | 'group' | 'invite' | 'device' | 'keys' | 'avatar'>(null)
   const [deviceCode, setDeviceCode] = useState<string | null>(null)
   const [view, setView] = useState<'roster' | 'thread'>('roster')
 
@@ -255,13 +283,13 @@ export default function ChatClient({ me }: { me: { id: string; username: string 
           .eq('id', me.id)
       }
 
-      const { data: roster } = await supabase
-        .from('profiles')
-        .select('id, username, identity_public_key')
-        .order('username')
-
+      const [{ data: roster }, { data: avatars }] = await Promise.all([
+        supabase.from('profiles').select('id, username, identity_public_key').order('username'),
+        supabase.from('avatars').select('user_id, data_url'),
+      ])
       if (cancelled) return
-      const list = (roster ?? []) as Profile[]
+      const avatarMap = new Map((avatars ?? []).map((a) => [a.user_id as string, a.data_url as string]))
+      const list = ((roster ?? []) as Omit<Profile, 'avatar_url'>[]).map((p) => ({ ...p, avatar_url: avatarMap.get(p.id) ?? null }))
       setPeople(list)
       await loadMyKeys(list)
       await loadConversations()
@@ -301,6 +329,20 @@ export default function ChatClient({ me }: { me: { id: string; username: string 
             await loadMyKeys((roster ?? []) as Profile[])
             if (activeRef.current) await openConversation(activeRef.current)
           })()
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'avatars' },
+        (payload) => {
+          if (payload.eventType === 'DELETE') {
+            const old = payload.old as { user_id?: string }
+            if (!old.user_id) return
+            setPeople((prev) => prev.map((p) => p.id === old.user_id ? { ...p, avatar_url: null } : p))
+            return
+          }
+          const row = payload.new as { user_id: string; data_url: string }
+          setPeople((prev) => prev.map((p) => p.id === row.user_id ? { ...p, avatar_url: row.data_url } : p))
         }
       )
       .subscribe()
@@ -402,11 +444,24 @@ export default function ChatClient({ me }: { me: { id: string; username: string 
   const nameOf = (id: string | null) =>
     id === me.id ? me.username : people.find((p) => p.id === id)?.username ?? 'Unbekannt'
 
+  const myAvatar = people.find((p) => p.id === me.id)?.avatar_url ?? null
   const avatarOf = (c: Conversation) => {
-    if (c.type === 'group') return { label: initials(c.title ?? 'Gruppe'), color: 'var(--pine)' }
+    if (c.type === 'group') return { id: c.id, name: c.title ?? 'Gruppe', imageUrl: null as string | null }
     const other = c.conversation_members.find((m) => m.user_id !== me.id)
     const name = other?.profiles?.username ?? '?'
-    return { label: initials(name), color: avatarColor(other?.user_id ?? name) }
+    return { id: other?.user_id ?? name, name, imageUrl: people.find((p) => p.id === other?.user_id)?.avatar_url ?? null }
+  }
+  async function saveAvatar(dataUrl: string): Promise<string | null> {
+    const { error } = await supabase.from('avatars').upsert({ user_id: me.id, data_url: dataUrl })
+    if (error) return 'Das Profilbild ließ sich nicht speichern.'
+    setPeople((prev) => prev.map((p) => p.id === me.id ? { ...p, avatar_url: dataUrl } : p))
+    return null
+  }
+  async function removeAvatar(): Promise<string | null> {
+    const { error } = await supabase.from('avatars').delete().eq('user_id', me.id)
+    if (error) return 'Das Profilbild ließ sich nicht entfernen.'
+    setPeople((prev) => prev.map((p) => p.id === me.id ? { ...p, avatar_url: null } : p))
+    return null
   }
 
   if (!ring) return null
@@ -418,7 +473,7 @@ export default function ChatClient({ me }: { me: { id: string; username: string 
       <aside className="roster">
         <div className="roster-head">
           <span className="who-me">
-            <span className="avatar avatar-lg" style={{ background: avatarColor(me.id) }}>{initials(me.username)}</span>
+            <button type="button" className="avatar-edit" onClick={() => setDialog('avatar')} aria-label="Profilbild ändern"><Avatar id={me.id} name={me.username} imageUrl={myAvatar} size="avatar-lg" /></button>
             <strong>{me.username}</strong>
           </span>
           <div style={{ display: 'flex', gap: '0.4rem' }}>
@@ -439,7 +494,7 @@ export default function ChatClient({ me }: { me: { id: string; username: string 
             const avatar = avatarOf(c)
             return (
               <button key={c.id} className="entry" aria-current={c.id === activeId} onClick={() => openConversation(c.id)}>
-                <span className="avatar" style={{ background: avatar.color }}>{avatar.label}</span>
+                <Avatar id={avatar.id} name={avatar.name} imageUrl={avatar.imageUrl} />
                 <span className="entry-text">
                   <span className="entry-title">{titleOf(c)}{unread.has(c.id) && <span className="muted"> · neu</span>}</span>
                   <span className="sub">{c.type === 'group' ? `${c.conversation_members.length} Mitglieder` : 'Direktnachricht'}</span>
@@ -539,6 +594,12 @@ export default function ChatClient({ me }: { me: { id: string; username: string 
         </Sheet>
       )}
 
+      {dialog === 'avatar' && (
+        <Sheet title="Profilbild" onClose={() => setDialog(null)}>
+          <AvatarPicker id={me.id} name={me.username} current={myAvatar} onSave={saveAvatar} onRemove={removeAvatar} />
+        </Sheet>
+      )}
+
       {dialog === 'keys' && (
         <Sheet title="Fingerabdrücke" onClose={() => setDialog(null)}>
           <p className="muted">Vergleicht die Zeilen über einen anderen Kanal, etwa persönlich. Stimmen sie überein, hat unterwegs niemand Schlüssel ausgetauscht.</p>
@@ -594,13 +655,49 @@ function Sheet({ title, children, onClose }: { title: string; children: React.Re
   )
 }
 
+function Avatar({ id, name, imageUrl, size = '' }: { id: string; name: string; imageUrl?: string | null; size?: 'avatar-lg' | 'avatar-sm' | '' }) {
+  const className = ['avatar', size].filter(Boolean).join(' ')
+  return imageUrl ? <span className={className}><img src={imageUrl} alt="" /></span> : <span className={className} style={{ background: avatarColor(id) }}>{initials(name)}</span>
+}
+
+function AvatarPicker({ id, name, current, onSave, onRemove }: {
+  id: string; name: string; current: string | null
+  onSave: (dataUrl: string) => Promise<string | null>; onRemove: () => Promise<string | null>
+}) {
+  const [preview, setPreview] = useState<string | null>(current)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const cameraRef = useRef<HTMLInputElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  async function handleFile(file?: File) {
+    if (!file) return
+    setBusy(true); setError(null)
+    try { const dataUrl = await processImageFile(file); const problem = await onSave(dataUrl); if (problem) setError(problem); else setPreview(dataUrl) }
+    catch (e) { setError(e instanceof Error ? e.message : 'Das hat nicht geklappt.') }
+    setBusy(false)
+  }
+  return <div className="avatar-picker">
+    <Avatar id={id} name={name} imageUrl={preview} size="avatar-lg" />
+    {error && <p className="note" role="alert">{error}</p>}
+    <input ref={cameraRef} type="file" accept="image/*" capture="user" hidden onChange={e => { void handleFile(e.target.files?.[0]); e.target.value = '' }} />
+    <input ref={fileRef} type="file" accept="image/*" hidden onChange={e => { void handleFile(e.target.files?.[0]); e.target.value = '' }} />
+    <div className="avatar-picker-actions">
+      <button className="btn-quiet" type="button" disabled={busy} onClick={() => cameraRef.current?.click()}>Kamera</button>
+      <button className="btn-quiet" type="button" disabled={busy} onClick={() => fileRef.current?.click()}>Bild auswählen</button>
+      {current && <button className="btn-quiet" type="button" disabled={busy} onClick={async () => { setBusy(true); setError(await onRemove()); setPreview(null); setBusy(false) }}>Entfernen</button>}
+    </div>
+    <p className="fine">Wird zentriert zugeschnitten und verkleinert. Wie Name und Gruppennamen ist das Profilbild nicht Ende-zu-Ende-verschlüsselt, sondern für alle Mitglieder sichtbar.</p>
+  </div>
+}
+
 function Fingerprints({ people, meId }: { people: Profile[]; meId: string }) {
-  const [rows, setRows] = useState<{ id: string; username: string; print: string }[]>([])
+  const [rows, setRows] = useState<{ id: string; username: string; avatarUrl: string | null; print: string }[]>([])
   useEffect(() => {
     void Promise.all(
       people.filter((p) => p.identity_public_key).map(async (p) => ({
         id: p.id,
         username: p.username,
+        avatarUrl: p.avatar_url,
         print: await fingerprint(p.identity_public_key!),
       }))
     ).then(setRows)
@@ -611,7 +708,7 @@ function Fingerprints({ people, meId }: { people: Profile[]; meId: string }) {
       {rows.map((row) => (
         <div key={row.id}>
           <span className="fp-row">
-            <span className="avatar avatar-sm" style={{ background: avatarColor(row.id) }}>{initials(row.username)}</span>
+            <Avatar id={row.id} name={row.username} imageUrl={row.avatarUrl} size="avatar-sm" />
             {row.username}{row.id === meId ? ' (du)' : ''}
           </span>
           <code>{row.print}</code>
@@ -659,7 +756,7 @@ function GroupDialog({
             {people.map((p) => (
               <label key={p.id} className="pick">
                 <input type="checkbox" checked={picked.has(p.id)} onChange={() => toggle(p.id)} />
-                <span className="avatar avatar-sm" style={{ background: avatarColor(p.id) }}>{initials(p.username)}</span>
+                <Avatar id={p.id} name={p.username} imageUrl={p.avatar_url} size="avatar-sm" />
                 {p.username}
               </label>
             ))}
